@@ -1,0 +1,669 @@
+---
+title: "Reddit Project for Title and Comments Analysis"
+author:
+- Anushree Bagwe
+- Sayali Kardile
+- Qingyuan Jiang
+date: "2/26/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+```
+## Business Context 
+We have taken the "Reddit" API to analyze the views against word "Trump" in the title as well as in the comments. 
+Our project will try to find the sentiment behind the Title and Comments and compare the results. Additionally we have built a Deep learning model on the same.
+
+## Problem Description
+#### 1.HOW DO PEOPLE FROM DIFFERENT PLACES JUDGE A SAME THING?
+- Perform sentiment analysis to find the tone of comments (positive, negative or neutral) related to a particular search term.
+
+#### 2.HOW TO BECOME FAMOUS?
+- Use Machine Learning models to find out which words in the existing title and text data help to increase number of comments.
+
+## URL link to download the zip file of data you collected from the API 
+
+
+## First Part: 
+
+We have collected the data using Reddit API only, The data is stored in below github link.
+You will find two files in below link, one is for all the comments and another is for all the titles having word "Trump" in it.
+https://github.com/sayalikardile/Reddit-Data-for-NLP-and-sentiment-analysis/upload
+
+```{r message=FALSE, warning=FALSE}
+
+#install.packages("tidytext")
+#install.packages("wordcloud")
+#install.packages("sentimentr")
+#install.packages(c("igraph", "ggforce", "ggraph"))
+#install.packages("topicmodels")
+#install.packages("broom")
+#install.packages("tictoc")
+#install.packages("spacyr")
+#install.packages("foreach")
+#install.packages("doParallel")
+#install.packages(c("cowplot", "googleway", "ggplot2", "ggrepel","ggspatial", "libwgeom", "sf", #"rnaturalearth","rnaturalearthdata"))
+#("ggridges")
+
+library(tidytext)
+library(stringr)
+library(tidyverse)
+library(foreach)
+library(doParallel)
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(wordcloud)
+library(reshape2)
+library(kableExtra)
+library(RedditExtractoR)
+library(tidyr)
+library(stringr)
+library(magrittr)
+library(dplyr)
+library(lubridate)
+library(tidytext)
+library(ggplot2)
+library(ggridges)
+library(tidytext)
+library(textdata)
+library(plyr)
+library(forcats)
+library(kernlab)
+library(rpart)
+library(psych) 
+library(caret)
+library(h2o)
+```
+
+Read the data from the reddit API for all the comments having word "Trump" in it.
+P.S. - We have used term "trump" for our instance, the program will run in same way for other keyword as well.
+
+```{r message=FALSE, warning=FALSE}
+# We have read the data from the reddit file and load it in Comments.RDa and Title.RDA file for future references.
+# The code is mentioned below and commented out since it takes lot of time to load the data verytime you knit the file.
+
+#reddit <- get_reddit(search_terms = "trump", regex_filter = "", subreddit = NA,
+#           page_threshold = 2, sort_by = "comments",
+#           wait_time = 2)
+#save(reddit,file="Comments.Rda")
+
+load("Comments.Rda")
+summary(reddit)
+df = reddit
+```
+
+## Data summary
+
+There are total "17" fields in the Reddit API which we are going to use in our analysis.
+1. id - Reddit id
+2. Structure - Strucure of the post 
+3. post_date - Date of the post 
+4. comm_date - Date of the Comment
+5. num_comments - Total number of comments
+6. subreddit - Subreddit of the post
+7. upvote_prop - likes and dislike probability of the post
+8. Post_score - Score of the post 
+9. Author - Author of the post 
+10. user - User of the comment
+11. Comment Score - Score of the comments given by other users 
+12. Contraversiality - ContraversialityScore of the comments given by other users
+13. Comment - Comment text 
+14. title - Title of the post 
+15. link - Link to the post 
+16. Domain - Domain of the post (subreddit)
+17. URL - URL to the comment
+
+There are total 22k instances of reddit comments and 21k of  reddit titles for our analysis.
+We would be performing Sentiment Analysis on Reddit Comments and Titles and try to find the tone of the Comments and Titles.
+Additionallyin H2O deep learning, we are trying to find any relationship between words used in title and the number of comments. 
+
+## Data exploration using NLP technique. 
+
+1. Turn text to tokens.
+
+```{r message=FALSE, warning=FALSE}
+
+which_train <- sample(x = c(TRUE, FALSE), size = nrow(df),
+                      replace = TRUE, prob = c(0.1, 0.9))
+
+df1 <- df[which_train, ]
+df2 <- df[!which_train, ]
+
+tokens <- df1 %>%
+  unnest_tokens(output = word, input = post_text)
+tokens %>%  dplyr::count(word,sort = TRUE)
+```
+
+2. Remove all the Stopwords 
+
+```{r message=FALSE, warning=FALSE}
+# Remove Stop words 
+sw = get_stopwords()
+sw
+
+cleaned_tokens <- tokens %>%
+  filter(!word %in% sw$word)
+```
+
+3. Remove all the Numbers 
+
+```{r message=FALSE, warning=FALSE}
+# Remove Numbers
+nums <- cleaned_tokens %>% 
+  filter(str_detect(word, "^[0-9]")) %>% 
+  select(word) %>% unique()
+
+cleaned_tokens <- cleaned_tokens %>% 
+  filter(!word %in% nums$word)
+```
+
+4. Plot the word frequency from the cleaned tokens 
+
+```{r message=FALSE, warning=FALSE}
+cleaned_tokens %>%   
+  dplyr::count(word, sort = T) %>%  
+  dplyr::rename(word_freq = n) %>%  
+  ggplot(aes(x=word_freq)) +  
+  geom_histogram(aes(y=..count..), color="black", fill="blue", alpha=0.3) +
+  scale_x_continuous(breaks=c(0:5,10,100,500,10e3), trans="log1p", expand=c(0,0)) + 
+  scale_y_continuous(breaks=c(0,100,1000,5e3,10e3,5e4,10e4,4e4), expand=c(0,0)) +  
+  theme_bw() 
+```
+
+5. Remove all the rare words to improve the performance of text analytic. Lets remove words that have less than 10 appearances in our collection.
+
+```{r message=FALSE, warning=FALSE}
+# Remove Rare words
+rare <- cleaned_tokens %>% 
+  dplyr::count(word) %>%
+  filter(n<10) %>%
+  select(word) %>% unique()
+
+cleaned_tokens <- cleaned_tokens %>% 
+  filter(!word %in% rare$word)
+length(unique(cleaned_tokens$word))
+```
+
+6. Remove words which are meaning less and not removed in previous steps. For example https is used mostly but its not meaningful word so we removed it.
+
+```{r message=FALSE, warning=FALSE}
+dropwords <- c("https",".com")
+cleaned_tokens <- cleaned_tokens  %>%   
+                  filter(!word %in% dropwords)  
+```
+
+7. Visualize the most common words used using wordcloud to get idea of mostly used words.Plot 100 most common words used.
+
+```{r message=FALSE, warning=FALSE}
+pal <- brewer.pal(8,"Dark2")
+cleaned_tokens %>%   
+  dplyr::count(word) %>%  
+  with(wordcloud(word, n, random.order = FALSE, max.words = 100, colors=pal))
+```
+
+We can see from above wordcloud that trump, politics,clinton,news are some of the words which are mostly used words for tagging. 
+Lets find out further what users are thinking by doing sentiment analysis.
+
+## Sentiment Analysis of comments for word Trump.
+
+1. Use 3 lexicons nrc, bing, afinn for sentiment keywords
+
+```{r message=FALSE, warning=FALSE}
+sent_reviews = cleaned_tokens %>% 
+  left_join(get_sentiments("nrc")) %>%
+  dplyr::rename(nrc = sentiment) %>%
+  left_join(get_sentiments("bing")) %>%
+  dplyr::rename(bing = sentiment) %>%
+  left_join(get_sentiments("afinn")) %>%
+  dplyr::rename(afinn = value)
+```
+
+2. Find most common most positive and negetive words.
+
+```{r message=FALSE, warning=FALSE}
+bing_word_counts <- sent_reviews %>%
+  filter(!is.na(bing)) %>%
+  dplyr::count(word, bing, sort = TRUE)
+bing_word_counts
+```
+
+3. Plot the contribution  to sentiments 
+
+```{r message=FALSE, warning=FALSE}
+bing_word_counts %>%  
+  filter(n > 6000) %>%  
+  mutate(n = ifelse(bing == "negative", -n, n)) %>%  
+  mutate(word = reorder(word, n)) %>%  
+  ggplot(aes(word, n, fill = bing)) +  
+  geom_col() +  
+  coord_flip() +  
+  labs(y = "Contribution to sentiment")
+```
+
+We can see from the graph that the positive sentiments are more than negetive.
+
+4. Plot the word cloud which gives top 1000 words used from which we can distinguish which are negetive words and positive owrds.
+
+```{r message=FALSE, warning=FALSE}
+bing_word_counts_temp <- bing_word_counts  %>% filter(n > 1000 )
+
+bing_word_counts %>% 
+  inner_join(get_sentiments("bing")) %>%
+  dplyr::count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 1000)
+```
+
+Mostly used negetive and positive words are plotted in above graph to get basic idea what words we have used for sentiment analysis.
+
+5. Plot the emotions from the sentiments.
+
+```{r message=FALSE, warning=FALSE}
+glimpse(sent_reviews )
+
+sent_reviews %>%
+  filter(!is.na(nrc)) %>%
+  ggplot(.,aes(x=nrc)) +
+  geom_bar(fill = "tomato3")
+```
+
+sentimenal analysis summary for comments having word "Trump"- 
+
+
+## Second Part
+
+## Find relationship for words in title and number of hits
+
+6. Collect data from 50 different subreddits
+
+This step will take more than 30 mins, I saved the codes in the R file, here ill read the data I saved.
+
+```{r message=FALSE, warning=FALSE}
+
+load("title.Rda")
+
+```
+
+7. Similar Data cleaning for titles as Comments
+
+```{r message=FALSE, warning=FALSE}
+
+df <- total[,c("num_comments","title")]
+
+df <- df %>% mutate(title = as.character(title))
+
+
+#count words in each title for future use
+df <- df %>% mutate(n= sapply(strsplit(df$title, " "), length)  )
+
+tokens <- df %>%  
+  unnest_tokens(output = word, input = title) 
+
+tokens %>%  dplyr::count(word, sort = TRUE)
+length(unique(tokens$word))
+
+sw = get_stopwords()
+
+cleaned_tokens <- tokens %>%  
+  filter(!word %in% sw$word)
+
+nums <- cleaned_tokens %>%   
+  filter(str_detect(word, "^[0-9]")) %>%   
+  select(word) %>% unique()
+
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!word %in% nums$word)
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!grepl("[^\u0001-\u007F]+",cleaned_tokens$word))
+
+cleaned_tokens %>% dplyr::count(word, sort = TRUE)
+
+
+length(unique(cleaned_tokens$word))
+
+
+df <- df %>% mutate(title = as.character(title))
+
+
+#count words in each title for future use
+df <- df %>% mutate(n= sapply(strsplit(df$title, " "), length)  )
+
+tokens <- df %>%  
+  unnest_tokens(output = word, input = title) 
+
+tokens %>%  dplyr::count(word, sort = TRUE)
+length(unique(tokens$word))
+
+sw = get_stopwords()
+
+cleaned_tokens <- tokens %>%  
+  filter(!word %in% sw$word)
+
+nums <- cleaned_tokens %>%   
+  filter(str_detect(word, "^[0-9]")) %>%   
+  select(word) %>% unique()
+
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!word %in% nums$word)
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!grepl("[^\u0001-\u007F]+",cleaned_tokens$word))
+
+cleaned_tokens %>% dplyr::count(word, sort = TRUE)
+
+
+length(unique(cleaned_tokens$word))
+
+rare <- cleaned_tokens %>%   
+  dplyr::count(word) %>%  
+  filter(n<10) %>%  
+  select(word) %>% unique() 
+rare
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!word %in% rare$word) 
+
+length(unique(cleaned_tokens$word))
+
+```
+
+8. Run sentiment analysis on titles, to see the difference.
+
+```{r message=FALSE, warning=FALSE}
+
+sent_reviews = cleaned_tokens %>%   
+  left_join(get_sentiments("nrc")) %>%  
+  rename(replace=c("sentiment"="nrc")) %>%
+  left_join(get_sentiments("bing")) %>%  
+  rename(replace=c("sentiment"="bing")) %>%
+  left_join(get_sentiments("afinn")) %>%  
+  rename(replace=c("value"="affin"))
+
+
+bing_word_counts <- sent_reviews %>%  
+  filter(!is.na(bing)) %>%  
+  dplyr::count(word,bing, sort = TRUE) 
+
+bing_word_counts %>%  
+  filter(n > 5) %>%  
+  mutate(n = ifelse(bing == "negative", -n, n)) %>%  
+  mutate(word = reorder(word, n)) %>%  
+  ggplot(aes(word, n, fill = bing)) +  
+  geom_col() +  coord_flip() +  
+  labs(y = "Contribution to sentiment")
+
+sent_reviews %>%  
+  filter(!is.na(bing)) %>%  
+  dplyr::count(bing, sort = TRUE) 
+
+
+```
+
+9. Sentiment Analysis on words related to the number of views
+
+```{r message=FALSE, warning=FALSE}
+
+high_hit_word_list<- cleaned_tokens %>%
+  ddply("word",summarize,mean=round(mean(num_comments))) %>%
+  arrange(desc(mean))
+
+sent_reviews = high_hit_word_list %>%   
+  left_join(get_sentiments("nrc")) %>%  
+  rename(replace=c("sentiment"="nrc")) %>%
+  left_join(get_sentiments("bing")) %>%  
+  rename(replace=c("sentiment"="bing")) %>%
+  left_join(get_sentiments("afinn")) %>%  
+  rename(replace=c("value"="affin"))
+
+sent_reviews
+
+bing_word_counts <- sent_reviews %>%  
+  filter(!is.na(bing))
+
+bing_word_counts %>%  
+  filter(mean > 20) %>%  
+  mutate(mean = ifelse(bing == "negative", -mean, mean)) %>%  
+  mutate(word = reorder(word, mean)) %>%  
+  ggplot(aes(word, mean, fill = bing)) +  
+  geom_col() +  coord_flip() +  
+  labs(y = "number of hits")
+
+df4<-cleaned_tokens %>%
+  mutate(count=1)
+
+df5<-ddply(df4,c("word"),numcolwise(sum))
+
+df6<-df5 %>%    
+  spread(key = word, value = count)
+
+df6[is.na(df6)] <- 0
+
+```
+
+## Machine Learning
+
+10. Run logistic Regression to see any relation existing.
+
+Some of the posts has over 10,000 comments, to have a better view, we scaled data for this part.
+
+From the result, we can tell some of the words will increase the number of comments of the post, but this result is not good enough.
+
+```{r message=FALSE, warning=FALSE}
+df6$num_comments<-df6$num_comments/1000
+
+df6$num_comments<-ifelse(df6$num_comments>10,10,df6$num_comments)
+  
+df6$num_comments<-floor(df6$num_comments)
+
+bank.df <- df6
+bank.df$SalePrice<-df6$num_comments
+
+selected.var <- c(1:length(df6))
+
+set.seed(2)
+train.index <- sample(c(1:dim(bank.df)[1]), dim(bank.df)[1]*0.6)
+train.df <- bank.df[train.index, selected.var]
+valid.df <- bank.df[-train.index, selected.var]
+
+car.lm <- lm(num_comments ~ ., data = train.df)
+
+options(scipen = 999)
+summary(car.lm)   # Get model summary
+
+```
+
+
+11. Run Deep learning models in H2O.
+
+```{r message=FALSE, warning=FALSE}
+
+df6<-df5 %>%    
+  spread(key = word, value = count)
+
+df6[is.na(df6)] <- 0
+
+#split dataset
+which_train <- sample(x = c(TRUE, FALSE), size = nrow(df6),
+                      replace = TRUE, prob = c(0.8, 0.2))
+
+recc_data_train <- df6[which_train, ]
+recc_data_valid <- df6[!which_train, ]
+
+length(recc_data_train[[1]])
+length(recc_data_valid[[1]])
+
+x_train_processed_tbl <- recc_data_train %>% select(-num_comments)
+y_train_processed_tbl <- recc_data_train %>% select(num_comments) 
+x_test_processed_tbl  <- recc_data_valid
+
+h2o.init(nthreads = -1)
+
+h2o.clusterInfo()
+
+data_h2o <- as.h2o(
+  bind_cols(y_train_processed_tbl, x_train_processed_tbl),
+  destination_frame= "train.hex" #destination_frame is optional
+)
+new_data_h2o <- as.h2o(
+  x_test_processed_tbl,
+  destination_frame= "test.hex" #destination_frame is optional
+)
+
+h2o.ls()
+
+
+splits <- h2o.splitFrame(data = data_h2o,
+                         ratios = c(0.7, 0.15), # 70/15/15 split
+                         seed = 1234)
+train_h2o <- splits[[1]] # from training data
+valid_h2o <- splits[[2]] # from training data
+test_h2o <- splits[[3]] # from training data
+
+
+y <- "num_comments" # column name for outcome
+x <- setdiff(names(train_h2o), y) # column names for predictors
+m1 <- h2o.deeplearning(
+  model_id = "dl_model_first",
+  x = x,
+  y = y,
+  training_frame = train_h2o,
+  validation_frame = valid_h2o, ## validation dataset: used for scoring and
+  ## early stopping
+  #activation="Rectifier", ## default
+  #hidden=c(200,200), ## default: 2 hidden layers, 200 neurons each
+  epochs = 1 ## one pass over the training data
+)
+
+summary(m1)
+
+prediction_h2o_dl <- h2o.predict(m1,
+                                 newdata = new_data_h2o)
+prediction_dl_tbl <- tibble(
+  SK_ID_CURR = x_test_processed_tbl$num_comments,
+  TARGET = as.vector(prediction_h2o_dl$predict)
+)
+
+h2o.shutdown(prompt = F)
+
+```
+
+
+From the result, RMSE was bad, we are getting same prediction for each word. Since the dataset become bigger and bigger, the word set we used are getting bigger as well. That could be one of the reasons why this is not working. The number of dataset might be one of the reason too.
+
+
+
+12. Compare to Youtube
+
+It seems people use equal number of positive and negative titles in Reddit, but its different from youtube.
+
+
+```{r message=FALSE, warning=FALSE}
+application_train <- read.csv("CAvideos.csv",na=c("",NA,"-1"))
+
+
+
+
+
+df <- application_train[,c("video_id","title","channel_title",
+                           "tags","views","likes","dislikes","comment_count","description")]
+df <- df %>% mutate(title = as.character(title))
+tokens <- df %>%  
+  unnest_tokens(output = word, input = title) 
+
+
+sw = get_stopwords()
+cleaned_tokens <- tokens %>%  
+  filter(!word %in% sw$word)
+nums <- cleaned_tokens %>%   
+  filter(str_detect(word, "^[0-9]")) %>%   
+  select(word) %>% unique()
+
+
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!word %in% nums$word)
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!grepl("[^\u0001-\u007F]+",cleaned_tokens$word))
+
+rare <- cleaned_tokens %>%   
+  dplyr::count(word) %>%  
+  filter(n<10) %>%  
+  select(word) %>% unique() 
+
+cleaned_tokens <- cleaned_tokens %>%   
+  filter(!word %in% rare$word) 
+
+
+sent_reviews1 = cleaned_tokens %>%   
+  left_join(get_sentiments("nrc")) %>%  
+  rename(replace=c("sentiment"="nrc")) %>%
+  left_join(get_sentiments("bing")) %>%  
+  rename(replace=c("sentiment"="bing")) %>%
+  left_join(get_sentiments("afinn")) %>%  
+  rename(replace=c("value"="affin"))
+
+
+bing_word_counts1 <- sent_reviews1 %>%  
+  filter(!is.na(bing)) %>%  
+  dplyr::count(word,bing, sort = TRUE) 
+
+
+high_hit_word_list<- cleaned_tokens %>%
+  ddply("word",summarize,mean=round(mean(views))) %>%
+  arrange(desc(mean))
+
+
+sent_reviews = high_hit_word_list %>%   
+  left_join(get_sentiments("nrc")) %>%  
+  rename(replace=c("sentiment"="nrc")) %>%
+  left_join(get_sentiments("bing")) %>%  
+  rename(replace=c("sentiment"="bing")) %>%
+  left_join(get_sentiments("afinn")) %>%  
+  rename(replace=c("value"="affin"))
+
+
+bing_word_counts <- sent_reviews %>%  
+  filter(!is.na(bing))
+
+bing_word_counts %>%  
+  filter(mean > 2000000) %>%  
+  mutate(mean = ifelse(bing == "negative", -mean, mean)) %>%  
+  mutate(word = reorder(word, mean)) %>%  
+  ggplot(aes(word, mean, fill = bing)) +  
+  geom_col() +  coord_flip() +  
+  labs(y = "number of hits")
+
+
+bing_word_counts %>%  
+  filter(mean > 10000) %>%  
+  mutate(mean = ifelse(bing == "negative", -mean, mean)) %>%  
+  mutate(word = reorder(word, mean)) %>%  
+  ggplot(aes(word, mean, fill = bing)) +  
+  geom_col() +  coord_flip() +  
+  labs(y = "Contribution to sentiment")
+
+
+
+```
+
+## Summary
+
+For the first part:
+For president Trump, it seems people use mostly negative comments on him, the most used words are :violent, strike, blame, abuse, attack, lie, suspicious, bomb, emergency….
+In the peer comment, some group asked question about how we identify negative comment embedded in negative comments, we did worried about that. But from those words, we can tell that there are not so much embedded negative commons. Those words are directly related to what Mr. President did last year. 
+
+For the second part:
+There are lots more negative words in YouTube titles compare to Reddit. We think the reason could be: in youtube, people will look at this video just because the title, not too many people will read video description and comment before watching, But in reddit, if you going to leave a review, you must have something interesting in your post text, not the title. So the title shows a natural tone overall.
+
+We coudn't find any relationship between titles and number of comments. But we might be able to find something in YouTube titles, because in the plot, it is obvious that some negative words will attract more video hits. But that was not so obvious in Reddit.
+
+
